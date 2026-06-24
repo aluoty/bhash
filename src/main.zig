@@ -18,9 +18,14 @@ pub fn main(init: std.process.Init) !void {
     var stdin_flag = false;
     var list_flag = false;
     var tag_flag = false;
+    var check_mode = false;
+    var check_file: ?[]const u8 = null;
     var check_quiet = false;
     var check_status = false;
-    var check_file: ?[]const u8 = null;
+    var check_ignore_missing = false;
+    var check_warn = false;
+    var check_strict = false;
+    var hmac_key: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -53,22 +58,34 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--list")) {
                 list_flag = true;
             } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--check")) {
-                i += 1;
-                if (i >= args.len) return error.MissingCheckFile;
-                check_file = args[i];
+                check_mode = true;
+                if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
+                    i += 1;
+                    check_file = args[i];
+                }
             } else if (std.mem.eql(u8, arg, "-t") or std.mem.eql(u8, arg, "--tag")) {
                 tag_flag = true;
             } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--binary")) {
                 format = .binary;
-            } else if (std.mem.eql(u8, arg, "--quiet")) {
+            } else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "--silent")) {
                 check_quiet = true;
             } else if (std.mem.eql(u8, arg, "--status")) {
                 check_status = true;
+            } else if (std.mem.eql(u8, arg, "--ignore-missing")) {
+                check_ignore_missing = true;
+            } else if (std.mem.eql(u8, arg, "--warn")) {
+                check_warn = true;
+            } else if (std.mem.eql(u8, arg, "--strict")) {
+                check_strict = true;
+            } else if (std.mem.eql(u8, arg, "--hmac")) {
+                i += 1;
+                if (i >= args.len) return error.MissingKey;
+                hmac_key = args[i];
             } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
                 printHelp(io);
                 return;
             } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--version")) {
-                std.debug.print("bhash 0.1.0\n", .{});
+                std.debug.print("bhash 1.0.0\n", .{});
                 return;
             } else {
                 std.debug.print("unknown flag: {s}\n", .{arg});
@@ -85,26 +102,33 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (list_flag) {
-        std.debug.print("Available algorithms:\n", .{});
-        for (Algorithm.all()) |a| {
-            std.debug.print("  {s:20}  {} bytes\n", .{ a.name(), a.outputSize() });
-        }
+        listAlgorithms(io);
         return;
     }
 
-    if (check_file) |cf| {
-        try verifyChecksums(allocator, io, cf, algo, check_quiet, check_status);
+    if (check_mode) {
+        const cf = check_file orelse if (strings.items.len > 0) strings.items[0] else null;
+        try verifyChecksums(allocator, io, cf, algo, check_quiet, check_status, check_ignore_missing, check_warn, check_strict);
         return;
     }
 
     if (tag_flag) {
+        const base_name = algoNameUpper(algo);
+        var tag_buf: [64]u8 = undefined;
+        const tag_name = if (hmac_key != null) blk: {
+            const len = 5 + base_name.len;
+            @memcpy(tag_buf[0..5], "HMAC-");
+            @memcpy(tag_buf[5..len], base_name);
+            break :blk tag_buf[0..len];
+        } else base_name;
+
         if (strings.items.len > 0) {
             for (strings.items) |s| {
-                const h = try algo.hash(s, allocator);
-                defer allocator.free(h);
-                const out = formatHash(h, format, allocator);
+                const out = try computeHash(algo, s, hmac_key, allocator);
                 defer allocator.free(out);
-                try stdoutPrint(io, "{s} (\"{s}\") = {s}\n", .{ algoNameUpper(algo), s, out });
+                const formatted = formatIfNeeded(out, format, allocator);
+                defer allocator.free(formatted);
+                try stdoutPrint(io, "{s} (\"{s}\") = {s}\n", .{ tag_name, s, formatted });
             }
             return;
         }
@@ -115,11 +139,11 @@ pub fn main(init: std.process.Init) !void {
                     std.process.exit(1);
                 };
                 defer allocator.free(data);
-                const h = try algo.hash(data, allocator);
-                defer allocator.free(h);
-                const out = formatHash(h, format, allocator);
+                const out = try computeHash(algo, data, hmac_key, allocator);
                 defer allocator.free(out);
-                try stdoutPrint(io, "{s} ({s}) = {s}\n", .{ algoNameUpper(algo), path, out });
+                const formatted = formatIfNeeded(out, format, allocator);
+                defer allocator.free(formatted);
+                try stdoutPrint(io, "{s} ({s}) = {s}\n", .{ tag_name, path, formatted });
             }
             return;
         }
@@ -127,14 +151,14 @@ pub fn main(init: std.process.Init) !void {
 
     if (strings.items.len > 0) {
         for (strings.items) |s| {
-            const h = try algo.hash(s, allocator);
+            const h = try computeHash(algo, s, hmac_key, allocator);
             defer allocator.free(h);
-            const out = formatHash(h, format, allocator);
-            defer allocator.free(out);
             if (format == .binary) {
                 try stdoutWrite(io, h);
             } else {
-                try stdoutPrint(io, "{s}  \"{s}\"\n", .{ out, s });
+                const formatted = formatHash(h, format, allocator);
+                defer allocator.free(formatted);
+                try stdoutPrint(io, "{s}  \"{s}\"\n", .{ formatted, s });
             }
         }
         return;
@@ -147,14 +171,14 @@ pub fn main(init: std.process.Init) !void {
                 std.process.exit(1);
             };
             defer allocator.free(data);
-            const h = try algo.hash(data, allocator);
+            const h = try computeHash(algo, data, hmac_key, allocator);
             defer allocator.free(h);
-            const out = formatHash(h, format, allocator);
-            defer allocator.free(out);
             if (format == .binary) {
                 try stdoutWrite(io, h);
             } else {
-                try stdoutPrint(io, "{s}  {s}\n", .{ out, path });
+                const formatted = formatHash(h, format, allocator);
+                defer allocator.free(formatted);
+                try stdoutPrint(io, "{s}  {s}\n", .{ formatted, path });
             }
         }
         return;
@@ -170,15 +194,14 @@ pub fn main(init: std.process.Init) !void {
         };
         defer allocator.free(data);
         if (data.len == 0 and stdin_flag) return;
-        const h = try algo.hash(data, allocator);
+        const h = try computeHash(algo, data, hmac_key, allocator);
         defer allocator.free(h);
-        const out = formatHash(h, format, allocator);
-        defer allocator.free(out);
         if (format == .binary) {
             try stdoutWrite(io, h);
-            try stdoutWrite(io, "\n");
         } else {
-            try stdoutPrint(io, "{s}\n", .{out});
+            const formatted = formatHash(h, format, allocator);
+            defer allocator.free(formatted);
+            try stdoutPrint(io, "{s}\n", .{formatted});
         }
     } else {
         try stderrPrint(io, "No input provided. Pipe data, pass strings/files, or use --help.\n", .{});
@@ -186,8 +209,28 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn algoNameUpper(a: Algorithm) []const u8 {
-    return switch (a) {
+fn computeHash(algo: Algorithm, data: []const u8, key: ?[]const u8, allocator: std.mem.Allocator) ![]u8 {
+    if (key) |k| {
+        return algo.hmac(data, k, allocator) catch |err| switch (err) {
+            error.HmacNotSupported => {
+                std.debug.print("error: {s} does not support HMAC (use a cryptographic hash like sha256)\n", .{algo.name()});
+                std.process.exit(1);
+            },
+            else => |e| return e,
+        };
+    }
+    return try algo.hash(data, allocator);
+}
+
+fn formatIfNeeded(h: []const u8, fmt: OutputFormat, allocator: std.mem.Allocator) []u8 {
+    if (fmt == .binary) {
+        return allocator.dupe(u8, h) catch @panic("OOM");
+    }
+    return formatHash(h, fmt, allocator);
+}
+
+fn algoNameUpper(algo: Algorithm) []const u8 {
+    return switch (algo) {
         .fnv32 => "FNV32",
         .fnv64 => "FNV64",
         .fnv128 => "FNV128",
@@ -238,11 +281,21 @@ fn stderrPrint(io: Io, comptime fmt: []const u8, args: anytype) !void {
     try writer.interface.flush();
 }
 
+fn listAlgorithms(io: Io) void {
+    var buf: [4096]u8 = undefined;
+    var writer = Io.File.Writer.init(.stdout(), io, &buf);
+    writer.interface.print("Available algorithms:\n", .{}) catch {};
+    for (Algorithm.all()) |a| {
+        writer.interface.print("  {s:20}  {} bytes\n", .{ a.name(), a.outputSize() }) catch {};
+    }
+    writer.interface.flush() catch {};
+}
+
 fn printHelp(io: Io) void {
     var buf: [4096]u8 = undefined;
     var writer = Io.File.Writer.init(.stdout(), io, &buf);
     writer.interface.print(
-        \\bhash - Universal hash tool — multiple algorithms, strings, files, and stdin
+        \\bhash 1.0.0 — Universal hash tool — 26 algorithms, strings, files, stdin
         \\
         \\Usage: bhash [OPTIONS] [STRINGS]...
         \\
@@ -250,8 +303,10 @@ fn printHelp(io: Io) void {
         \\  Hash strings:   bhash -a sha256 "hello" "world"
         \\  Hash files:     bhash -a md5 -f file1.bin -f file2.bin
         \\  Hash stdin:     echo "data" | bhash -a blake3
-        \\  Verify sums:    bhash -a sha256 --check SHA256SUMS
+        \\  Verify sums:    bhash -a sha256 -c SHA256SUMS
+        \\  Verify stdin:   bhash -a sha256 -c < SHA256SUMS
         \\  Tagged output:  bhash -a sha256 --tag -f file.bin
+        \\  HMAC auth:      bhash -a sha256 --hmac "secret" "message"
         \\  List algos:     bhash --list
         \\
         \\Options:
@@ -262,9 +317,14 @@ fn printHelp(io: Io) void {
         \\  -b, --binary      Output raw binary bytes
         \\  -t, --tag         BSD-style tagged output (ALGO (file) = hash)
         \\  -l, --list        List all available algorithms
-        \\  -c, --check       Verify checksums from a sums-file
+        \\  -c, --check       Verify checksums from a sums-file (stdin if no file)
         \\      --quiet       In --check mode, only print summary
+        \\      --silent      Alias for --quiet
         \\      --status      In --check mode, suppress all output (exit only)
+        \\      --ignore-missing  Don't fail on missing files in --check mode
+        \\      --warn        Warn about malformed checksum lines
+        \\      --strict      Exit non-zero on malformed checksum lines
+        \\      --hmac <key>  Compute HMAC with given key
         \\  -h, --help        Print help
         \\  -V, --version     Print version
         \\
@@ -277,6 +337,12 @@ fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
     defer file.close(io);
     var buf: [8192]u8 = undefined;
     var reader = Io.File.reader(file, io, &buf);
+    return reader.interface.allocRemaining(allocator, Io.Limit.limited(std.math.maxInt(usize)));
+}
+
+fn readStdin(allocator: std.mem.Allocator, io: Io) ![]u8 {
+    var buf: [8192]u8 = undefined;
+    var reader = Io.File.reader(.stdin(), io, &buf);
     return reader.interface.allocRemaining(allocator, Io.Limit.limited(std.math.maxInt(usize)));
 }
 
@@ -303,15 +369,24 @@ fn hexEncode(allocator: std.mem.Allocator, bytes: []const u8) []u8 {
     return result;
 }
 
-fn verifyChecksums(allocator: std.mem.Allocator, io: Io, path: []const u8, algo: Algorithm, quiet: bool, status: bool) !void {
-    const data = readFile(allocator, io, path) catch |err| {
-        std.debug.print("{s}: {s}\n", .{ path, @errorName(err) });
-        std.process.exit(1);
-    };
+fn verifyChecksums(allocator: std.mem.Allocator, io: Io, path: ?[]const u8, algo: Algorithm, quiet: bool, status: bool, ignore_missing: bool, warn: bool, strict: bool) !void {
+    const data: []u8 = if (path) |p|
+        readFile(allocator, io, p) catch |err| {
+            std.debug.print("{s}: {s}\n", .{ p, @errorName(err) });
+            std.process.exit(1);
+        }
+    else
+        readStdin(allocator, io) catch |err| {
+            try stderrPrint(io, "stdin: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
     defer allocator.free(data);
 
     var ok: u64 = 0;
     var failed: u64 = 0;
+    var missing: u64 = 0;
+    var malformed: u64 = 0;
+    const source_name: []const u8 = path orelse "(stdin)";
 
     var lines = std.mem.splitScalar(u8, data, '\n');
     var line_no: usize = 0;
@@ -322,15 +397,23 @@ fn verifyChecksums(allocator: std.mem.Allocator, io: Io, path: []const u8, algo:
         if (line.len == 0 or line[0] == '#' or line[0] == ';') continue;
 
         const sep = std.mem.indexOfAny(u8, line, " \t") orelse {
-            if (!status) try stderrPrint(io, "{s}:{}: malformed line\n", .{ path, line_no });
+            if (warn) try stderrPrint(io, "{s}:{}: malformed line\n", .{ source_name, line_no });
+            malformed += 1;
+            if (strict) {
+                if (!status and !quiet) try stdoutPrint(io, "{s}:{}: FAILED (malformed)\n", .{ source_name, line_no });
+                failed += 1;
+            }
             continue;
         };
         const expected_hex = line[0..sep];
         const remaining = std.mem.trim(u8, line[sep + 1 ..], " \t");
-        // Strip binary marker '*' if present (sha256sum compat)
         const filename = if (remaining.len > 0 and remaining[0] == '*') remaining[1..] else remaining;
 
         const file_data = readFile(allocator, io, filename) catch |err| {
+            if (ignore_missing) {
+                missing += 1;
+                continue;
+            }
             if (!quiet and !status) try stdoutPrint(io, "{s}: FAILED ({s})\n", .{ filename, @errorName(err) });
             failed += 1;
             continue;
@@ -353,7 +436,14 @@ fn verifyChecksums(allocator: std.mem.Allocator, io: Io, path: []const u8, algo:
     }
 
     if (!status) {
-        try stderrPrint(io, "\n{} OK, {} FAILED\n", .{ ok, failed });
+        if (malformed > 0 and warn) {
+            try stderrPrint(io, "\n{} line(s) malformed\n", .{malformed});
+        }
+        try stderrPrint(io, "\n{} OK, {} FAILED", .{ ok, failed });
+        if (ignore_missing and missing > 0) {
+            try stderrPrint(io, ", {} MISSING", .{missing});
+        }
+        try stderrPrint(io, "\n", .{});
     }
-    if (failed > 0) std.process.exit(1);
+    if (failed > 0 or (strict and malformed > 0)) std.process.exit(1);
 }

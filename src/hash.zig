@@ -153,6 +153,36 @@ pub const Algorithm = enum {
         return out;
     }
 
+    pub fn hmac(self: Algorithm, data: []const u8, key: []const u8, allocator: std.mem.Allocator) ![]u8 {
+        const out_size = self.outputSize();
+        const out = try allocator.alloc(u8, out_size);
+        errdefer allocator.free(out);
+
+        switch (self) {
+            .sha1 => hmacFinalize(std.crypto.hash.Sha1, data, key, out),
+            .sha224 => hmacFinalize(std.crypto.hash.sha2.Sha224, data, key, out),
+            .sha256 => hmacFinalize(std.crypto.hash.sha2.Sha256, data, key, out),
+            .sha384 => hmacFinalize(std.crypto.hash.sha2.Sha384, data, key, out),
+            .sha512 => hmacFinalize(std.crypto.hash.sha2.Sha512, data, key, out),
+            .sha512_224 => hmacFinalize(std.crypto.hash.sha2.Sha512_224, data, key, out),
+            .sha512_256 => hmacFinalize(std.crypto.hash.sha2.Sha512_256, data, key, out),
+            .md5 => hmacFinalize(std.crypto.hash.Md5, data, key, out),
+            .blake2b => hmacFinalize(std.crypto.hash.blake2.Blake2b512, data, key, out),
+            .blake2b_256 => hmacFinalize(std.crypto.hash.blake2.Blake2b256, data, key, out),
+            .blake2b_384 => hmacFinalize(std.crypto.hash.blake2.Blake2b384, data, key, out),
+            .blake2b_512 => hmacFinalize(std.crypto.hash.blake2.Blake2b512, data, key, out),
+            .blake2s => hmacFinalize(std.crypto.hash.blake2.Blake2s256, data, key, out),
+            .blake2s_256 => hmacFinalize(std.crypto.hash.blake2.Blake2s256, data, key, out),
+            .blake3 => hmacFinalize(std.crypto.hash.Blake3, data, key, out),
+            .fnv32, .fnv64, .fnv128, .crc32, .crc32c, .crc64_ecma, .crc64_iso, .xxh32, .xxh64, .xxh3_64, .xxh3_128 => {
+                allocator.free(out);
+                return error.HmacNotSupported;
+            },
+        }
+
+        return out;
+    }
+
     pub fn all() []const Algorithm {
         return std.meta.tags(Algorithm);
     }
@@ -179,6 +209,40 @@ fn aliasMap(s: []const u8) ?Algorithm {
 
 fn finalize(comptime H: type, data: []const u8, out: []u8) void {
     H.hash(data, @as(*[H.digest_length]u8, @ptrCast(out.ptr)), .{});
+}
+
+fn hmacFinalize(comptime H: type, data: []const u8, key: []const u8, out: []u8) void {
+    var k_padded: [H.block_length]u8 = .{0} ** H.block_length;
+
+    if (key.len > H.block_length) {
+        var hashed: [H.digest_length]u8 = undefined;
+        H.hash(key, &hashed, .{});
+        @memcpy(k_padded[0..H.digest_length], &hashed);
+    } else {
+        @memcpy(k_padded[0..key.len], key);
+    }
+
+    var ipad: [H.block_length]u8 = undefined;
+    var opad: [H.block_length]u8 = undefined;
+    for (&ipad, &opad, k_padded) |*i, *o, kp| {
+        i.* = kp ^ 0x36;
+        o.* = kp ^ 0x5c;
+    }
+
+    var inner: [H.digest_length]u8 = undefined;
+    {
+        var h = H.init(.{});
+        h.update(&ipad);
+        h.update(data);
+        h.final(&inner);
+    }
+
+    {
+        var h = H.init(.{});
+        h.update(&opad);
+        h.update(&inner);
+        h.final(@as(*[H.digest_length]u8, @ptrCast(out.ptr)));
+    }
 }
 
 fn fnv1a32(data: []const u8) u32 {

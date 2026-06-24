@@ -141,3 +141,15 @@ Lines starting with `#` or `;` are skipped.
 
 All hashing algorithms are either from Zig's standard library (`std.crypto`) or
 implemented directly in Zig. No external C dependencies.
+
+You defined your own Bhash name
++ Bin Hash
++ Byte Hash
++ Bit Hash
++ Bye Hash
++ Best Hash
++ Bad Hash(when it doesn't work)
+
+## License
+
+See [LICENSE](LICENSE)

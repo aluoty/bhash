@@ -173,3 +173,4 @@ zig-out/bin/bhash -a blake3 "hello"
 
 All hashing algorithms are either from Zig's standard library (`std.crypto`) or
 implemented directly in Zig. No external C dependencies.
+

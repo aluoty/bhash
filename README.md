@@ -1,4 +1,4 @@
-# bhash 1.0.0
+# bhash
 
 A fast, universal hashing tool with **26 algorithms, HMAC support, and checksum verification** — written in pure Zig.
 

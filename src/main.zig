@@ -84,8 +84,8 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
                 printHelp(io);
                 return;
-            } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--version")) {
-                std.debug.print("bhash 1.0.0\n", .{});
+            } else if (std.mem.eql(u8, arg, "-V") or std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "--V")) {
+                std.debug.print("bhash {s}\n", .{@import("build_config").version});
                 return;
             } else {
                 std.debug.print("unknown flag: {s}\n", .{arg});
@@ -295,7 +295,9 @@ fn printHelp(io: Io) void {
     var buf: [4096]u8 = undefined;
     var writer = Io.File.Writer.init(.stdout(), io, &buf);
     writer.interface.print(
-        \\bhash 1.0.0 — Universal hash tool — 26 algorithms, strings, files, stdin
+        \\bhash {s} — Universal hash tool — 26 algorithms, strings, files, stdin
+    , .{@import("build_config").version}) catch {};
+    writer.interface.print(
         \\
         \\Usage: bhash [OPTIONS] [STRINGS]...
         \\

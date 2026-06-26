@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const package_version = "1.0.4";
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -47,9 +49,8 @@ pub fn build(b: *std.Build) void {
 fn getVersion(b: *std.Build) []const u8 {
     const result = std.process.run(b.allocator, b.graph.io, .{
         .argv = &.{ "git", "-C", b.build_root.path orelse ".", "describe", "--tags", "--always", "--dirty" },
-    }) catch |err| {
-        std.debug.print("warning: failed to get git version ({s}), using '0.0.0'\n", .{@errorName(err)});
-        return "0.0.0";
+    }) catch {
+        return package_version;
     };
     defer b.allocator.free(result.stdout);
     defer b.allocator.free(result.stderr);
@@ -58,12 +59,10 @@ fn getVersion(b: *std.Build) []const u8 {
         .exited => |code| code == 0,
         else => false,
     };
-    if (!success) {
-        std.debug.print("warning: git describe failed, using '0.0.0'\n", .{});
-        return "0.0.0";
-    }
+    if (!success) return package_version;
 
     const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
-    if (trimmed.len == 0) return "0.0.0";
+    if (trimmed.len == 0) return package_version;
+
     return b.allocator.dupe(u8, trimmed) catch @panic("OOM");
 }
